@@ -15,8 +15,7 @@ I see https://www.w3schools.com/js is a good tutorial for beginners
  ## First hand guide to small edit
 
  ## Approach to debug this code
- Refer https://www.w3schools.com/js/js_debugging.asp
- JavaScript itself provide multiple ways to debug a code. 
+ JavaScript provides multiple ways to debug a code. 
  1. Via dialog box
  This is simplest approach. For example, if you want to inspect any value, you will add code in script whereever you want to display any value.
  This approach uses window.alert() API
