@@ -8743,7 +8743,7 @@ Bitcoin.Util = {
         .then(function (floID) { 
             //App functions....
             console.log(floID); 
-            floBlockchainAPI.getBalance(myFloID)
+            floBlockchainAPI.getBalance(floID)
             .then(result => {
                 console.log(result)
                 alert(`Found ${result} balance for FLO_ID: ${floID}`)
