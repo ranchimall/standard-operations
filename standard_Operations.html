@@ -8728,11 +8728,33 @@ Bitcoin.Util = {
         //floDapps.setAppObjectStores({sampleObs1:{}, sampleObs2:{options{autoIncrement:true, keyPath:'SampleKey'}, Indexes:{sampleIndex:{}}}})
         //floDapps.setCustomPrivKeyInput( () => { FUNCTION BODY *must return private key* } )
 
+        // First finish off strtup related activities
+        var promise = new Promise(function(resolve, reject) { 
         floDapps.launchStartUp().then(result => {
             console.log(result)
             alert(`Welcome FLO_ID: ${myFloID}`)
-            //App functions....
+            resolve(myFloID); 
         }).catch(error => console.error(error))
+    }); 
+
+    // Once startup related activities are done, then continue with app process
+    // For example, below example checks the balance on the FloID
+    promise
+        .then(function (floID) { 
+            //App functions....
+            console.log(floID); 
+            floBlockchainAPI.getBalance(myFloID)
+            .then(result => {
+                console.log(result)
+                alert(`Found ${result} balance for FLO_ID: ${floID}`)
+                //App functions....
+            })
+            .catch(error => console.error(error))
+        })
+        .catch(function (errormessage) { 
+            console.log(errormessage); 
+        }); 
+
     }
 </script>
 </body>
