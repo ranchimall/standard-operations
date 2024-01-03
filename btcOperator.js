@@ -1,19 +1,371 @@
-(function (EXPORTS) { //btcOperator v1.1.3c
+(function (EXPORTS) { //btcOperator v1.2.5
     /* BTC Crypto and API Operator */
     const btcOperator = EXPORTS;
+    const SATOSHI_IN_BTC = 1e8;
 
-    //This library uses API provided by chain.so (https://chain.so/)
-    const URL = "https://blockchain.info/";
+    const util = btcOperator.util = {};
+
+    util.Sat_to_BTC = value => parseFloat((value / SATOSHI_IN_BTC).toFixed(8));
+    util.BTC_to_Sat = value => parseInt(value * SATOSHI_IN_BTC);
+    const checkIfTor = btcOperator.checkIfTor = () => {
+        return fetch('https://check.torproject.org/api/ip', {
+            mode: 'no-cors'
+        })
+            .then(response => response.json())
+            .then(result => result.IsTor)
+            .catch(error => false)
+    }
+    let isTor = false;
+    checkIfTor().then(result => isTor = result);
+
+    // NOTE: some APIs may not support all functions properly hence they are omitted
+    const APIs = btcOperator.APIs = [
+        {
+            url: 'https://api.blockcypher.com/v1/btc/main/',
+            name: 'Blockcypher',
+            balance({ addr }) {
+                return fetch_api(`addrs/${addr}/balance`, { url: this.url })
+                    .then(result => util.Sat_to_BTC(result.balance))
+            },
+            async block({ id }) {
+                try {
+                    let block = await fetch_api(`blocks/${id}`, { url: this.url })
+                    return formatBlock(block)
+                } catch (e) {
+                    console.log(e)
+                }
+            },
+            broadcast({ rawTxHex, url }) {
+                return fetch(`${this.url}txs/push`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ tx: rawTxHex })
+                }).then(response => response.json())
+                    .then(result => result.hash)
+            }
+        },
+        {
+            url: 'https://blockstream.info/api/',
+            name: 'Blockstream',
+            hasOnion: true,
+            onionUrl: `http://explorerzydxu5ecjrkwceayqybizmpjjznk5izmitf2modhcusuqlid.onion/api/`,
+            balance({ addr, url }) {
+                return fetch_api(`address/${addr}/utxo`, { url: url || this.url })
+                    .then(result => {
+                        const balance = result.reduce((t, u) => t + u.value, 0)
+                        return util.Sat_to_BTC(balance)
+                    })
+            },
+            // tx({ txid, url }) {
+            //     return fetch_api(`tx/${txid}`, { url: url || this.url })
+            //         .then(result => formatTx(result))
+            // },
+            // txHex({ txid, url }) {
+            //     return fetch_api(`tx/${txid}/hex`, { url: url || this.url, asText: true })
+            // },
+            // txs({ addr, before, after, url }) {
+            //     return fetch_api(`address/${addr}/txs${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: url || this.url })
+            // },
+            async block({ id, url }) {
+                // if id is hex string then it is block hash
+                try {
+                    let blockHash = id
+                    if (!/^[0-9a-f]{64}$/i.test(id))
+                        blockHash = await fetch_api(`block-height/${id}`, { url: url || this.url, asText: true })
+                    const block = await fetch_api(`block/${blockHash}`, { url: url || this.url })
+                    return formatBlock(block)
+                } catch (e) {
+                    console.error(e)
+                }
+            },
+            broadcast({ rawTxHex, url }) {
+                return fetch(`${url || this.url}tx`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ tx: rawTxHex })
+                }).then(response => response.text())
+            }
+        },
+        {
+            url: 'https://mempool.space/api/',
+            name: 'Mempool',
+            balance({ addr }) {
+                return fetch_api(`address/${addr}`, { url: this.url })
+                    .then(result => util.Sat_to_BTC(result.chain_stats.funded_txo_sum - result.chain_stats.spent_txo_sum))
+            },
+            tx({ txid }) {
+                return fetch_api(`tx/${txid}`, { url: this.url })
+                    .then(result => formatTx(result))
+
+            },
+            txHex({ txid }) {
+                return fetch_api(`tx/${txid}/hex`, { url: this.url, asText: true })
+            },
+            txs({ addr, before, after }) {
+                return fetch_api(`address/${addr}/txs${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: this.url })
+            },
+            async block({ id }) {
+                // if id is hex string then it is block hash
+                try {
+                    let blockHash = id
+                    if (!/^[0-9a-f]{64}$/i.test(id))
+                        blockHash = await fetch_api(`block-height/${id}`, { url: this.url, asText: true })
+                    const block = await fetch_api(`block/${blockHash}`, { url: this.url })
+                    return formatBlock(block)
+                } catch (e) {
+                    console.error(e)
+                }
+            },
+            broadcast({ rawTxHex, url }) {
+                return fetch(`${this.url}tx`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ tx: rawTxHex })
+                }).then(response => response.text())
+            }
+        },
+        {
+            url: 'https://blockchain.info/',
+            name: 'Blockchain',
+            balance({ addr }) {
+                return fetch_api(`q/addressbalance/${addr}`, { url: this.url })
+                    .then(result => util.Sat_to_BTC(result))
+            },
+            unspent({ addr, allowUnconfirmedUtxos = false }) {
+                return fetch_api(`unspent?active=${addr}`, { url: this.url })
+                    .then(result => formatUtxos(result.unspent_outputs, allowUnconfirmedUtxos))
+            },
+            tx({ txid }) {
+                return fetch_api(`rawtx/${txid}`, { url: this.url })
+                    .then(result => formatTx(result))
+            },
+            txHex({ txid }) {
+                return fetch_api(`rawtx/${txid}?format=hex`, { url: this.url, asText: true })
+            },
+            txs({ addr, before, after }) {
+                return fetch_api(`rawaddr/${addr}${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: this.url })
+                    .then(result => result.txs)
+            },
+            async block({ id }) {
+                try {
+                    let block
+                    // if id is hex string then it is block hash
+                    if (/^[0-9a-f]{64}$/i.test(id))
+                        block = await fetch_api(`rawblock/${id}`, { url: this.url })
+                    else {
+                        const result = await fetch_api(`block-height/${id}?format=json`, { url: this.url })
+                        block = result.blocks[0]
+                    }
+                    return formatBlock(block)
+                } catch (e) {
+                    console.error(e)
+                }
+            },
+            async blockTxs({ id }) {
+                try {
+                    let block
+                    // if id is hex string then it is block hash
+                    if (/^[0-9a-f]{64}$/i.test(id))
+                        block = await fetch_api(`rawblock/${id}`, { url: this.url })
+                    else {
+                        const result = await fetch_api(`block-height/${id}?format=json`, { url: this.url })
+                        block = result.blocks[0]
+                    }
+                    return block.tx
+                } catch (e) {
+                    console.error(e)
+                }
+            }
+        }
+    ]
+
+    btcOperator.util.format = {} // functions to homogenize API results
+    const formatBlock = btcOperator.util.format.block = async (block) => {
+        try {
+            const { height, hash, id, time, timestamp, mrkl_root, merkle_root, prev_block, next_block, size } = block;
+            const details = {
+                height,
+                hash: hash || id,
+                time: (time || timestamp) * 1000,
+                merkle_root: merkle_root || mrkl_root,
+                size,
+            }
+            if (prev_block)
+                details.prev_block = prev_block
+            if (next_block)
+                details.next_block = next_block[0]
+            return details
+        } catch (e) {
+            console.error(e)
+        }
+    }
+    const formatUtxos = btcOperator.util.format.utxos = async (utxos, allowUnconfirmedUtxos = false) => {
+        try {
+            if (!allowUnconfirmedUtxos && !utxos || !Array.isArray(utxos))
+                throw {
+                    message: "No utxos found",
+                    code: 1000 //error code for when issue is not from API but situational (like no utxos found) 
+                }
+            return utxos.map(utxo => {
+                const { tx_hash, tx_hash_big_endian, txid, tx_output_n, vout, value, script, confirmations, status: { confirmed } = {} } = utxo;
+                return {
+                    confirmations: confirmations || confirmed,
+                    tx_hash_big_endian: tx_hash_big_endian || tx_hash || txid,
+                    tx_output_n: tx_output_n || vout,
+                    value,
+                    script
+                }
+            })
+        } catch (e) {
+            throw e
+        }
+    }
+
+    const formatTx = btcOperator.util.format.tx = async (tx) => {
+        try {
+            const { txid, hash, time, block_height, fee, fees, received,
+                confirmed, size, double_spend, block_hash, confirmations,
+                status: { block_height: statusBlockHeight, block_hash: statusBlockHash, block_time } = {}
+            } = tx;
+            const inputs = tx.vin || tx.inputs;
+            const outputs = tx.vout || tx.outputs || tx.out;
+            return {
+                hash: hash || txid,
+                size: size,
+                fee: fee || fees,
+                double_spend,
+                time: (time * 1000) || new Date(confirmed || received).getTime() || block_time * 1000 || Date.now(),
+                block_height: block_height || statusBlockHeight,
+                block_hash: block_hash || statusBlockHash,
+                confirmations,
+                inputs: inputs.map(input => {
+                    return {
+                        index: input.n || input.output_index || input.vout,
+                        prev_out: {
+                            addr: input.prev_out?.addr || input.addresses?.[0] || input.prev_out?.address || input.addr || input.prevout.scriptpubkey_address,
+                            value: input.prev_out?.value || input.output_value || input.prevout.value,
+                        },
+                    }
+                }),
+                out: outputs.map(output => {
+                    return {
+                        addr: output.scriptpubkey_address || output.addresses?.[0] || output.scriptpubkey_address || output.addr,
+                        value: output.value || output.scriptpubkey_value,
+                    }
+                })
+            }
+        } catch (e) {
+            console.error(e)
+        }
+    }
+
+    const multiApi = btcOperator.multiApi = async (fnName, { index = 0, ...args } = {}) => {
+        try {
+            let triedOnion = false;
+            while (index < APIs.length) {
+                if (!APIs[index][fnName] || (APIs[index].coolDownTime && APIs[index].coolDownTime > new Date().getTime())) {
+                    index += 1;
+                    continue;
+                }
+                return await APIs[index][fnName](args);
+            }
+            if (isTor && !triedOnion) {
+                triedOnion = true;
+                index = 0;
+                while (index < APIs.length) {
+                    if (!APIs[index].hasOnion || (APIs[index].coolDownTime && APIs[index].coolDownTime > new Date().getTime())) {
+                        index += 1;
+                        continue;
+                    }
+                    return await multiApi(fnName, { index: index + 1, ...args, url: APIs[index].onionUrl });
+                }
+            }
+            throw "No API available"
+        } catch (error) {
+            if (error.code && error.code === 1000) {
+                throw error.message;
+            } else {
+                console.debug(error);
+                APIs[index].coolDownTime = new Date().getTime() + 1000 * 60 * 10; // 10 minutes
+                return multiApi(fnName, { index: index + 1, ...args });
+            }
+        }
+    };
+
+    function parseTx(tx, addressOfTx) {
+        const { txid, hash, time, block_height, inputs, outputs, out, vin, vout, fee, fees, received, confirmed, status: { block_height: statusBlockHeight, block_time } = {} } = tx;
+        let parsedTx = {
+            txid: hash || txid,
+            time: (time * 1000) || new Date(confirmed || received).getTime() || block_time * 1000 || Date.now(),
+            block: block_height || statusBlockHeight,
+        }
+        //sender list
+        parsedTx.tx_senders = {};
+        (inputs || vin).forEach(i => {
+            const address = i.prev_out?.addr || i.addresses?.[0] || i.prev_out?.address || i.addr || i.prevout.scriptpubkey_address;
+            const value = i.prev_out?.value || i.output_value || i.value || i.prevout.value;
+            if (address in parsedTx.tx_senders)
+                parsedTx.tx_senders[address] += value;
+            else parsedTx.tx_senders[address] = value;
+        });
+        parsedTx.tx_input_value = 0;
+        for (let senderAddr in parsedTx.tx_senders) {
+            let val = parsedTx.tx_senders[senderAddr];
+            parsedTx.tx_senders[senderAddr] = util.Sat_to_BTC(val);
+            parsedTx.tx_input_value += val;
+        }
+        parsedTx.tx_input_value = util.Sat_to_BTC(parsedTx.tx_input_value);
+        //receiver list
+        parsedTx.tx_receivers = {};
+        (outputs || out || vout).forEach(o => {
+            const address = o.scriptpubkey_address || o.addresses?.[0] || o.scriptpubkey_address || o.addr;
+            const value = o.value || o.scriptpubkey_value;
+            if (address in parsedTx.tx_receivers)
+                parsedTx.tx_receivers[address] += value;
+            else parsedTx.tx_receivers[address] = value;
+        });
+        parsedTx.tx_output_value = 0;
+        for (let receiverAddr in parsedTx.tx_receivers) {
+            let val = parsedTx.tx_receivers[receiverAddr];
+            parsedTx.tx_receivers[receiverAddr] = util.Sat_to_BTC(val);
+            parsedTx.tx_output_value += val;
+        }
+        parsedTx.tx_output_value = util.Sat_to_BTC(parsedTx.tx_output_value);
+        // tx fee
+        parsedTx.tx_fee = util.Sat_to_BTC(fee || fees || (parsedTx.tx_input_value - parsedTx.tx_output_value));
+        //detect tx type (in, out, self)
+        if (Object.keys(parsedTx.tx_receivers).length === 1 && Object.keys(parsedTx.tx_senders).length === 1 && Object.keys(parsedTx.tx_senders)[0] === Object.keys(parsedTx.tx_receivers)[0]) {
+            parsedTx.type = 'self';
+            parsedTx.amount = parsedTx.tx_receivers[addressOfTx];
+            parsedTx.address = addressOfTx;
+        } else if (addressOfTx in parsedTx.tx_senders && Object.keys(parsedTx.tx_receivers).some(addr => addr !== addressOfTx)) {
+            parsedTx.type = 'out';
+            parsedTx.receiver = Object.keys(parsedTx.tx_receivers).filter(addr => addr != addressOfTx);
+            parsedTx.amount = parsedTx.receiver.reduce((t, addr) => t + parsedTx.tx_receivers[addr], 0) + parsedTx.tx_fee;
+        } else {
+            parsedTx.type = 'in';
+            parsedTx.sender = Object.keys(parsedTx.tx_senders).filter(addr => addr != addressOfTx);
+            parsedTx.amount = parsedTx.tx_receivers[addressOfTx];
+        }
+        return parsedTx;
+    }
+
 
     const DUST_AMT = 546,
         MIN_FEE_UPDATE = 219;
 
-    const fetch_api = btcOperator.fetch = function (api, json_res = true) {
+    const fetch_api = btcOperator.fetch = function (api, { asText = false, url = 'https://blockchain.info/' } = {}) {
         return new Promise((resolve, reject) => {
-            console.debug(URL + api);
-            fetch(URL + api).then(response => {
+            console.debug(url + api);
+            fetch(url + api).then(response => {
                 if (response.ok) {
-                    (json_res ? response.json() : response.text())
+                    (asText ? response.text() : response.json())
                         .then(result => resolve(result))
                         .catch(error => reject(error))
                 } else {
@@ -24,13 +376,6 @@
             }).catch(error => reject(error))
         })
     };
-
-    const SATOSHI_IN_BTC = 1e8;
-
-    const util = btcOperator.util = {};
-
-    util.Sat_to_BTC = value => parseFloat((value / SATOSHI_IN_BTC).toFixed(8));
-    util.BTC_to_Sat = value => parseInt(value * SATOSHI_IN_BTC);
 
     function get_fee_rate() {
         return new Promise((resolve, reject) => {
@@ -46,6 +391,7 @@
     }
 
     const broadcastTx = btcOperator.broadcastTx = rawTxHex => new Promise((resolve, reject) => {
+        console.log('txHex:', rawTxHex)
         let url = 'https://coinb.in/api/?uid=1&key=12345678901234567890123456789012&setmodule=bitcoin&request=sendrawtransaction';
         fetch(url, {
             method: 'POST',
@@ -54,6 +400,7 @@
             },
             body: "rawtx=" + rawTxHex
         }).then(response => {
+            // multiApi('broadcast', { rawTxHex }).then(response => {
             response.text().then(resultText => {
                 let r = resultText.match(/<result>.*<\/result>/);
                 if (!r)
@@ -64,7 +411,12 @@
                         let txid = resultText.match(/<txid>.*<\/txid>/).pop().replace('<txid>', '').replace('</txid>', '');
                         resolve(txid);
                     } else if (r == '0') {
-                        let error = resultText.match(/<response>.*<\/response>/).pop().replace('<response>', '').replace('</response>', '');
+                        let error
+                        if (resultText.includes('<message>')) {
+                            error = resultText.match(/<message>.*<\/message>/).pop().replace('<message>', '').replace('</message>', '');
+                        } else {
+                            error = resultText.match(/<response>.*<\/response>/).pop().replace('<response>', '').replace('</response>', '');
+                        }
                         reject(decodeURIComponent(error.replace(/\+/g, " ")));
                     } else reject(resultText);
                 }
@@ -267,10 +619,11 @@
     }
 
     //BTC blockchain APIs
-
     btcOperator.getBalance = addr => new Promise((resolve, reject) => {
-        fetch_api(`q/addressbalance/${addr}`)
-            .then(result => resolve(util.Sat_to_BTC(result)))
+        if (!validateAddress(addr))
+            return reject("Invalid address");
+        multiApi('balance', { addr })
+            .then(result => resolve(result))
             .catch(error => reject(error))
     });
 
@@ -394,12 +747,16 @@
     }
     btcOperator.validateTxParameters = validateTxParameters;
 
-    function createTransaction(senders, redeemScripts, receivers, amounts, fee, change_address, fee_from_receiver) {
+    const createTransaction = btcOperator.createTransaction = ({
+        senders, redeemScripts, receivers, amounts, fee, change_address,
+        fee_from_receiver, allowUnconfirmedUtxos = false, sendingTx = false,
+        hasInsufficientBalance = false
+    }) => {
         return new Promise((resolve, reject) => {
             let total_amount = parseFloat(amounts.reduce((t, a) => t + a, 0).toFixed(8));
             const tx = coinjs.transaction();
             let output_size = addOutputs(tx, receivers, amounts, change_address);
-            addInputs(tx, senders, redeemScripts, total_amount, fee, output_size, fee_from_receiver).then(result => {
+            addInputs(tx, senders, redeemScripts, total_amount, fee, output_size, fee_from_receiver, allowUnconfirmedUtxos).then(result => {
                 if (result.change_amount > 0 && result.change_amount > result.fee) //add change amount if any (ignore dust change)
                     tx.outs[tx.outs.length - 1].value = util.BTC_to_Sat(result.change_amount); //values are in satoshi
                 if (fee_from_receiver) { //deduce fee from receivers if fee_from_receiver
@@ -427,16 +784,21 @@
                 result.output_amount = total_amount - (fee_from_receiver ? result.fee : 0);
                 result.total_size = BASE_TX_SIZE + output_size + result.input_size;
                 result.transaction = tx;
-                resolve(result);
+                if (sendingTx && result.hasOwnProperty('hasInsufficientBalance') && result.hasInsufficientBalance)
+                    reject({
+                        message: "Insufficient balance",
+                        ...result
+                    });
+                else
+                    resolve(result);
             }).catch(error => reject(error))
         })
     }
-    btcOperator.createTransaction = createTransaction;
 
-    function addInputs(tx, senders, redeemScripts, total_amount, fee, output_size, fee_from_receiver) {
+    function addInputs(tx, senders, redeemScripts, total_amount, fee, output_size, fee_from_receiver, allowUnconfirmedUtxos = false) {
         return new Promise((resolve, reject) => {
             if (fee !== null) {
-                addUTXOs(tx, senders, redeemScripts, fee_from_receiver ? total_amount : total_amount + fee, false).then(result => {
+                addUTXOs(tx, senders, redeemScripts, fee_from_receiver ? total_amount : total_amount + fee, false, { allowUnconfirmedUtxos }).then(result => {
                     result.fee = fee;
                     resolve(result);
                 }).catch(error => reject(error))
@@ -445,8 +807,8 @@
                     let net_fee = BASE_TX_SIZE * fee_rate;
                     net_fee += (output_size * fee_rate);
                     (fee_from_receiver ?
-                        addUTXOs(tx, senders, redeemScripts, total_amount, false) :
-                        addUTXOs(tx, senders, redeemScripts, total_amount + net_fee, fee_rate)
+                        addUTXOs(tx, senders, redeemScripts, total_amount, false, { allowUnconfirmedUtxos }) :
+                        addUTXOs(tx, senders, redeemScripts, total_amount + net_fee, fee_rate, { allowUnconfirmedUtxos })
                     ).then(result => {
                         result.fee = parseFloat((net_fee + (result.input_size * fee_rate)).toFixed(8));
                         result.fee_rate = fee_rate;
@@ -458,7 +820,7 @@
     }
     btcOperator.addInputs = addInputs;
 
-    function addUTXOs(tx, senders, redeemScripts, required_amount, fee_rate, rec_args = {}) {
+    function addUTXOs(tx, senders, redeemScripts, required_amount, fee_rate, rec_args = { allowUnconfirmedUtxos: false }) {
         return new Promise((resolve, reject) => {
             required_amount = parseFloat(required_amount.toFixed(8));
             if (typeof rec_args.n === "undefined") {
@@ -472,17 +834,24 @@
                     input_amount: rec_args.input_amount,
                     change_amount: required_amount * -1 //required_amount will be -ve of change_amount
                 });
-            else if (rec_args.n >= senders.length)
-                return reject("Insufficient Balance");
+            else if (rec_args.n >= senders.length) {
+                return resolve({
+                    hasInsufficientBalance: true,
+                    input_size: rec_args.input_size,
+                    input_amount: rec_args.input_amount,
+                    change_amount: required_amount * -1
+                });
+            }
             let addr = senders[rec_args.n],
                 rs = redeemScripts[rec_args.n];
             let addr_type = coinjs.addressDecode(addr).type;
             let size_per_input = _sizePerInput(addr, rs);
-            fetch_api(`unspent?active=${addr}`).then(result => {
-                let utxos = result.unspent_outputs;
+            multiApi('unspent', { addr, allowUnconfirmedUtxos: rec_args.allowUnconfirmedUtxos }).then(utxos => {
                 //console.debug("add-utxo", addr, rs, required_amount, utxos);
                 for (let i = 0; i < utxos.length && required_amount > 0; i++) {
-                    if (!utxos[i].confirmations) //ignore unconfirmed utxo
+                    if (utxos.length === 1 && rec_args.allowUnconfirmedUtxos) {
+                        console.log('allowing unconfirmed utxos')
+                    } else if (!utxos[i].confirmations) //ignore unconfirmed utxo
                         continue;
                     var script;
                     if (!rs || !rs.length) //legacy script
@@ -524,43 +893,6 @@
         return size;
     }
     btcOperator.addOutputs = addOutputs;
-
-    /*
-    function autoFeeCalc(tx) {
-        return new Promise((resolve, reject) => {
-            get_fee_rate().then(fee_rate => {
-                let tx_size = tx.size();
-                for (var i = 0; i < this.ins.length; i++)
-                    switch (tx.extractScriptKey(i).type) {
-                        case 'scriptpubkey':
-                            tx_size += SIGN_SIZE;
-                            break;
-                        case 'segwit':
-                        case 'multisig':
-                            tx_size += SIGN_SIZE * 0.25;
-                            break;
-                        default:
-                            console.warn('Unknown script-type');
-                            tx_size += SIGN_SIZE;
-                    }
-                resolve(tx_size * fee_rate);
-            }).catch(error => reject(error))
-        })
-    }
-
-    function editFee(tx, current_fee, target_fee, index = -1) {
-        //values are in satoshi
-        index = parseInt(index >= 0 ? index : tx.outs.length - index);
-        if (index < 0 || index >= tx.outs.length)
-            throw "Invalid index";
-        let edit_value = parseInt(current_fee - target_fee), //rip of any decimal places
-            current_value = tx.outs[index].value; //could be BigInterger
-        if (edit_value < 0 && edit_value > current_value)
-            throw "Insufficient value at vout";
-        tx.outs[index].value = current_value instanceof BigInteger ?
-            current_value.add(new BigInteger('' + edit_value)) : parseInt(current_value + edit_value);
-    }
-    */
 
     function tx_fetch_for_editing(tx) {
         return new Promise((resolve, reject) => {
@@ -674,119 +1006,119 @@
         })
     }
 
-    btcOperator.editFee_corewallet = function(tx_hex, new_fee, private_keys, change_only = true) {
-    return new Promise((resolve, reject) => {
-        if (!Array.isArray(private_keys))
-            private_keys = [private_keys];
-        tx_fetch_for_editing(tx_hex).then(tx => {
-            parseTransaction(tx).then(tx_parsed => {
-                if (tx_parsed.fee >= new_fee)
-                    return reject("Fees can only be increased");
+    btcOperator.editFee_corewallet = function (tx_hex, new_fee, private_keys, change_only = true) {
+        return new Promise((resolve, reject) => {
+            if (!Array.isArray(private_keys))
+                private_keys = [private_keys];
+            tx_fetch_for_editing(tx_hex).then(tx => {
+                parseTransaction(tx).then(tx_parsed => {
+                    if (tx_parsed.fee >= new_fee)
+                        return reject("Fees can only be increased");
 
-                //editable addresses in output values (for fee increase)
-                var edit_output_address = new Set();
-                if (change_only === true) //allow only change values (ie, sender address) to be edited to inc fee
-                    tx_parsed.inputs.forEach(inp => edit_output_address.add(inp.address));
-                else if (change_only === false) //allow all output values to be edited
-                    tx_parsed.outputs.forEach(out => edit_output_address.add(out.address));
-                else if (typeof change_only == 'string') // allow only given receiver id output to be edited
-                    edit_output_address.add(change_only);
-                else if (Array.isArray(change_only)) //allow only given set of receiver id outputs to be edited
-                    change_only.forEach(id => edit_output_address.add(id));
+                    //editable addresses in output values (for fee increase)
+                    var edit_output_address = new Set();
+                    if (change_only === true) //allow only change values (ie, sender address) to be edited to inc fee
+                        tx_parsed.inputs.forEach(inp => edit_output_address.add(inp.address));
+                    else if (change_only === false) //allow all output values to be edited
+                        tx_parsed.outputs.forEach(out => edit_output_address.add(out.address));
+                    else if (typeof change_only == 'string') // allow only given receiver id output to be edited
+                        edit_output_address.add(change_only);
+                    else if (Array.isArray(change_only)) //allow only given set of receiver id outputs to be edited
+                        change_only.forEach(id => edit_output_address.add(id));
 
-                //edit output values to increase fee
-                let inc_fee = util.BTC_to_Sat(new_fee - tx_parsed.fee);
-                if (inc_fee < MIN_FEE_UPDATE)
-                    return reject(`Insufficient additional fee. Minimum increment: ${MIN_FEE_UPDATE}`);
-                for (let i = tx.outs.length - 1; i >= 0 && inc_fee > 0; i--) //reduce in reverse order
-                    if (edit_output_address.has(tx_parsed.outputs[i].address)) {
-                        let current_value = tx.outs[i].value;
-                        if (current_value instanceof BigInteger) //convert BigInteger class to inv value
-                            current_value = current_value.intValue();
-                        //edit the value as required
-                        if (current_value > inc_fee) {
-                            tx.outs[i].value = current_value - inc_fee;
-                            inc_fee = 0;
-                        } else {
-                            inc_fee -= current_value;
-                            tx.outs[i].value = 0;
+                    //edit output values to increase fee
+                    let inc_fee = util.BTC_to_Sat(new_fee - tx_parsed.fee);
+                    if (inc_fee < MIN_FEE_UPDATE)
+                        return reject(`Insufficient additional fee. Minimum increment: ${MIN_FEE_UPDATE}`);
+                    for (let i = tx.outs.length - 1; i >= 0 && inc_fee > 0; i--) //reduce in reverse order
+                        if (edit_output_address.has(tx_parsed.outputs[i].address)) {
+                            let current_value = tx.outs[i].value;
+                            if (current_value instanceof BigInteger) //convert BigInteger class to inv value
+                                current_value = current_value.intValue();
+                            //edit the value as required
+                            if (current_value > inc_fee) {
+                                tx.outs[i].value = current_value - inc_fee;
+                                inc_fee = 0;
+                            } else {
+                                inc_fee -= current_value;
+                                tx.outs[i].value = 0;
+                            }
                         }
+                    if (inc_fee > 0) {
+                        let max_possible_fee = util.BTC_to_Sat(new_fee) - inc_fee; //in satoshi
+                        return reject(`Insufficient output values to increase fee. Maximum fee possible: ${util.Sat_to_BTC(max_possible_fee)}`);
                     }
-                if (inc_fee > 0) {
-                    let max_possible_fee = util.BTC_to_Sat(new_fee) - inc_fee; //in satoshi
-                    return reject(`Insufficient output values to increase fee. Maximum fee possible: ${util.Sat_to_BTC(max_possible_fee)}`);
-                }
-                tx.outs = tx.outs.filter(o => o.value >= DUST_AMT); //remove all output with value less than DUST amount
+                    tx.outs = tx.outs.filter(o => o.value >= DUST_AMT); //remove all output with value less than DUST amount
 
-                //remove existing signatures and reset the scripts
-                let wif_keys = [];
-                let witness_position = 0;
-                for (let i in tx.ins) {
-                    var addr = tx_parsed.inputs[i].address,
-                        value = util.BTC_to_Sat(tx_parsed.inputs[i].value);
-                    let addr_decode = coinjs.addressDecode(addr);
+                    //remove existing signatures and reset the scripts
+                    let wif_keys = [];
+                    let witness_position = 0;
+                    for (let i in tx.ins) {
+                        var addr = tx_parsed.inputs[i].address,
+                            value = util.BTC_to_Sat(tx_parsed.inputs[i].value);
+                        let addr_decode = coinjs.addressDecode(addr);
 
-                    //find the correct key for addr
-                    var privKey = private_keys.find(pk => verifyKey(addr, pk));
-                    if (!privKey)
-                        return reject(`Private key missing for ${addr}`);
-                    //find redeemScript (if any)
-                    const rs = _redeemScript(addr, privKey);
-                    rs === false ? wif_keys.unshift(privKey) : wif_keys.push(privKey); //sorting private-keys (wif)
-                    //reset the script for re-signing
-                    var script;
-                    if (!rs || !rs.length) {
-                        //legacy script (derive from address)
-                        let s = coinjs.script();
-                        s.writeOp(118); //OP_DUP
-                        s.writeOp(169); //OP_HASH160
-                        s.writeBytes(addr_decode.bytes);
-                        s.writeOp(136); //OP_EQUALVERIFY
-                        s.writeOp(172); //OP_CHECKSIG
-                        script = Crypto.util.bytesToHex(s.buffer);
-                    } else if (((rs.match(/^00/) && rs.length == 44)) || (rs.length == 40 && rs.match(/^[a-f0-9]+$/gi))) {
-                        //redeemScript for segwit/bech32 
-                        let s = coinjs.script();
-                        s.writeBytes(Crypto.util.hexToBytes(rs));
-                        s.writeOp(0);
-                        s.writeBytes(coinjs.numToBytes(value.toFixed(0), 8));
-                        script = Crypto.util.bytesToHex(s.buffer);
-                        if (addr_decode == "bech32") {witness_position = witness_position + 1;} //bech32 has witness
-                    } else if (addr_decode.type === 'multisigBech32') {
-                        var rs_array = [];
-                        rs_array = btcOperator.extractLastHexStrings(tx.witness);
-                        let redeemScript = rs_array[witness_position];
-                        witness_position = witness_position + 1;
-                   
-                        //redeemScript multisig (bech32)
-                        let s = coinjs.script();
-                        s.writeBytes(Crypto.util.hexToBytes(redeemScript));
-                        s.writeOp(0);
-                        s.writeBytes(coinjs.numToBytes(value.toFixed(0), 8));
-                        script = Crypto.util.bytesToHex(s.buffer);
-                    } else //redeemScript for multisig (segwit)
-                        script = rs;
-                    tx.ins[i].script = coinjs.script(script);
-                }
-                tx.witness = false; //remove all witness signatures
-                console.debug("Unsigned:", tx.serialize());
-                //re-sign the transaction
-                new Set(wif_keys).forEach(key => tx.sign(key, 1 /*sighashtype*/ )); //Sign the tx using private key WIF
-                if (btcOperator.checkSigned(tx)) {
-                      resolve(tx.serialize());
+                        //find the correct key for addr
+                        var privKey = private_keys.find(pk => verifyKey(addr, pk));
+                        if (!privKey)
+                            return reject(`Private key missing for ${addr}`);
+                        //find redeemScript (if any)
+                        const rs = _redeemScript(addr, privKey);
+                        rs === false ? wif_keys.unshift(privKey) : wif_keys.push(privKey); //sorting private-keys (wif)
+                        //reset the script for re-signing
+                        var script;
+                        if (!rs || !rs.length) {
+                            //legacy script (derive from address)
+                            let s = coinjs.script();
+                            s.writeOp(118); //OP_DUP
+                            s.writeOp(169); //OP_HASH160
+                            s.writeBytes(addr_decode.bytes);
+                            s.writeOp(136); //OP_EQUALVERIFY
+                            s.writeOp(172); //OP_CHECKSIG
+                            script = Crypto.util.bytesToHex(s.buffer);
+                        } else if (((rs.match(/^00/) && rs.length == 44)) || (rs.length == 40 && rs.match(/^[a-f0-9]+$/gi))) {
+                            //redeemScript for segwit/bech32 
+                            let s = coinjs.script();
+                            s.writeBytes(Crypto.util.hexToBytes(rs));
+                            s.writeOp(0);
+                            s.writeBytes(coinjs.numToBytes(value.toFixed(0), 8));
+                            script = Crypto.util.bytesToHex(s.buffer);
+                            if (addr_decode == "bech32") { witness_position = witness_position + 1; } //bech32 has witness
+                        } else if (addr_decode.type === 'multisigBech32') {
+                            var rs_array = [];
+                            rs_array = btcOperator.extractLastHexStrings(tx.witness);
+                            let redeemScript = rs_array[witness_position];
+                            witness_position = witness_position + 1;
+
+                            //redeemScript multisig (bech32)
+                            let s = coinjs.script();
+                            s.writeBytes(Crypto.util.hexToBytes(redeemScript));
+                            s.writeOp(0);
+                            s.writeBytes(coinjs.numToBytes(value.toFixed(0), 8));
+                            script = Crypto.util.bytesToHex(s.buffer);
+                        } else //redeemScript for multisig (segwit)
+                            script = rs;
+                        tx.ins[i].script = coinjs.script(script);
+                    }
+                    tx.witness = false; //remove all witness signatures
+                    console.debug("Unsigned:", tx.serialize());
+                    //re-sign the transaction
+                    new Set(wif_keys).forEach(key => tx.sign(key, 1 /*sighashtype*/)); //Sign the tx using private key WIF
+                    if (btcOperator.checkSigned(tx)) {
+                        resolve(tx.serialize());
                     } else {
-                      reject("All private keys not present");
+                        reject("All private keys not present");
                     }
+                }).catch(error => reject(error))
             }).catch(error => reject(error))
-        }).catch(error => reject(error))
-    })
-}
+        })
+    }
 
 
     btcOperator.sendTx = function (senders, privkeys, receivers, amounts, fee = null, options = {}) {
+        options.sendingTx = true;
         return new Promise((resolve, reject) => {
             createSignedTx(senders, privkeys, receivers, amounts, fee, options).then(result => {
-                // debugger;
                 broadcastTx(result.transaction.serialize())
                     .then(txid => resolve(txid))
                     .catch(error => reject(error));
@@ -808,7 +1140,7 @@
                     receivers,
                     amounts,
                     fee,
-                    change_address: options.change_address
+                    ...options
                 }));
             } catch (e) {
                 return reject(e)
@@ -823,7 +1155,11 @@
             if (redeemScripts.includes(null)) //TODO: segwit
                 return reject("Unable to get redeem-script");
             //create transaction
-            createTransaction(senders, redeemScripts, receivers, amounts, fee, options.change_address || senders[0], options.fee_from_receiver).then(result => {
+            createTransaction({
+                senders, redeemScripts, receivers, amounts, fee,
+                change_address: options.change_address || senders[0],
+                ...options
+            }).then(result => {
                 let tx = result.transaction;
                 console.debug("Unsigned:", tx.serialize());
                 new Set(wif_keys).forEach(key => tx.sign(key, 1 /*sighashtype*/)); //Sign the tx using private key WIF
@@ -833,7 +1169,9 @@
         })
     }
 
-    btcOperator.createTx = function (senders, receivers, amounts, fee = null, options = {}) {
+    btcOperator.createTx = function (senders, receivers, amounts, fee = null, options = {
+        allowUnconfirmedUtxos: false
+    }) {
         return new Promise((resolve, reject) => {
             try {
                 ({
@@ -854,7 +1192,11 @@
             if (redeemScripts.includes(null)) //TODO: segwit
                 return reject("Unable to get redeem-script");
             //create transaction
-            createTransaction(senders, redeemScripts, receivers, amounts, fee, options.change_address || senders[0], options.fee_from_receiver).then(result => {
+            createTransaction({
+                senders, redeemScripts, receivers, amounts, fee,
+                change_address: options.change_address || senders[0],
+                ...options
+            }).then(result => {
                 result.tx_hex = result.transaction.serialize();
                 delete result.transaction;
                 resolve(result);
@@ -890,7 +1232,12 @@
                 return reject(e)
             }
             //create transaction
-            createTransaction([sender], [redeemScript], receivers, amounts, fee, options.change_address || sender, options.fee_from_receiver).then(result => {
+            createTransaction({
+                senders: [sender], redeemScripts: [redeemScript],
+                receivers, amounts, fee,
+                change_address: options.change_address || sender,
+                ...options
+            }).then(result => {
                 result.tx_hex = result.transaction.serialize();
                 delete result.transaction;
                 resolve(result);
@@ -965,7 +1312,7 @@
     }
 
     const getTxOutput = (txid, i) => new Promise((resolve, reject) => {
-        fetch_api(`rawtx/${txid}`)
+        multiApi('tx', { txid })
             .then(result => resolve(result.out[i]))
             .catch(error => reject(error))
     });
@@ -1027,87 +1374,40 @@
             .catch(error => reject(error))
     })
 
-    const getTx = btcOperator.getTx = txid => new Promise((resolve, reject) => {
-        fetch_api(`rawtx/${txid}`).then(result => {
-            getLatestBlock().then(latest_block => resolve({
+    const getTx = btcOperator.getTx = txid => new Promise(async (resolve, reject) => {
+        try {
+            const result = await multiApi('tx', { txid });
+            if (!result.hasOwnProperty('confirmations'))
+                result.confirmations = await getLatestBlock() - result.block_height;
+            resolve({
                 block: result.block_height,
                 txid: result.hash,
-                time: result.time * 1000,
-                confirmations: result.block_height === null ? 0 : latest_block - result.block_height, //calculate confirmations using latest block number as api doesnt relay it
+                time: result.time,
                 size: result.size,
                 fee: util.Sat_to_BTC(result.fee),
                 inputs: result.inputs.map(i => Object({ address: i.prev_out.addr, value: util.Sat_to_BTC(i.prev_out.value) })),
                 total_input_value: util.Sat_to_BTC(result.inputs.reduce((a, i) => a + i.prev_out.value, 0)),
                 outputs: result.out.map(o => Object({ address: o.addr, value: util.Sat_to_BTC(o.value) })),
                 total_output_value: util.Sat_to_BTC(result.out.reduce((a, o) => a += o.value, 0)),
-            }))
-        }).catch(error => reject(error))
-    });
+            })
+        } catch (error) {
+            reject(error)
+        }
+    }).catch(error => reject(error))
 
-    getTx.hex = btcOperator.getTx.hex = txid => new Promise((resolve, reject) => {
-        fetch_api(`rawtx/${txid}?format=hex`, false)
-            .then(result => resolve(result))
-            .catch(error => reject(error))
-    })
+    getTx.hex = btcOperator.getTx.hex = txid => multiApi('txHex', { txid });
 
     btcOperator.getAddressData = address => new Promise((resolve, reject) => {
-        fetch_api(`rawaddr/${address}`).then(data => {
-            let details = {};
-            details.balance = util.Sat_to_BTC(data.final_balance);
-            details.address = data.address;
-            details.txs = data.txs.map(tx => {
-                let d = {
-                    txid: tx.hash,
-                    time: tx.time * 1000, //s to ms
-                    block: tx.block_height,
-                }
-                //sender list
-                d.tx_senders = {};
-                tx.inputs.forEach(i => {
-                    if (i.prev_out.addr in d.tx_senders)
-                        d.tx_senders[i.prev_out.addr] += i.prev_out.value;
-                    else d.tx_senders[i.prev_out.addr] = i.prev_out.value;
-                });
-                d.tx_input_value = 0;
-                for (let s in d.tx_senders) {
-                    let val = d.tx_senders[s];
-                    d.tx_senders[s] = util.Sat_to_BTC(val);
-                    d.tx_input_value += val;
-                }
-                d.tx_input_value = util.Sat_to_BTC(d.tx_input_value);
-                //receiver list
-                d.tx_receivers = {};
-                tx.out.forEach(o => {
-                    if (o.addr in d.tx_receivers)
-                        d.tx_receivers[o.addr] += o.value;
-                    else d.tx_receivers[o.addr] = o.value;
-                });
-                d.tx_output_value = 0;
-                for (let r in d.tx_receivers) {
-                    let val = d.tx_receivers[r];
-                    d.tx_receivers[r] = util.Sat_to_BTC(val);
-                    d.tx_output_value += val;
-                }
-                d.tx_output_value = util.Sat_to_BTC(d.tx_output_value);
-                d.tx_fee = util.Sat_to_BTC(tx.fee);
-                //tx type
-                if (tx.result > 0) { //net > 0, balance inc => type=in
-                    d.type = "in";
-                    d.amount = util.Sat_to_BTC(tx.result);
-                    d.sender = Object.keys(d.tx_senders).filter(s => s !== address);
-                } else if (Object.keys(d.tx_receivers).some(r => r !== address)) { //net < 0, balance dec & receiver present => type=out
-                    d.type = "out";
-                    d.amount = util.Sat_to_BTC(tx.result * -1);
-                    d.receiver = Object.keys(d.tx_receivers).filter(r => r !== address);
-                    d.fee = d.tx_fee;
-                } else { //net < 0 (fee) & no other id in receiver list => type=self
-                    d.type = "self";
-                    d.amount = d.tx_receivers[address];
-                    d.address = address
-                }
-                return d;
-            })
-            resolve(details);
+        Promise.all([
+            multiApi('balance', { addr: address }),
+            multiApi('txs', { addr: address })
+        ]).then(([balance, txs]) => {
+            const parsedTxs = txs.map(tx => parseTx(tx, address));
+            resolve({
+                address,
+                balance,
+                txs: parsedTxs
+            });
         }).catch(error => reject(error))
     });
 
