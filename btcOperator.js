@@ -1,4 +1,4 @@
-(function (EXPORTS) { //btcOperator v1.2.5
+(function (EXPORTS) { //btcOperator v1.2.7
     /* BTC Crypto and API Operator */
     const btcOperator = EXPORTS;
     const SATOSHI_IN_BTC = 1e8;
@@ -18,6 +18,25 @@
     let isTor = false;
     checkIfTor().then(result => isTor = result);
 
+    async function post(url, data, { asText = false } = {}) {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            if (response.ok) {
+                return asText ? await response.text() : await response.json()
+            } else {
+                throw response
+            }
+        } catch (e) {
+            throw e
+        }
+    }
+
     // NOTE: some APIs may not support all functions properly hence they are omitted
     const APIs = btcOperator.APIs = [
         {
@@ -35,15 +54,13 @@
                     console.log(e)
                 }
             },
-            broadcast({ rawTxHex, url }) {
-                return fetch(`${this.url}txs/push`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ tx: rawTxHex })
-                }).then(response => response.json())
-                    .then(result => result.hash)
+            async broadcast({ rawTxHex, url }) {
+                try {
+                    const result = await post(`${url || this.url}txs/push`, { tx: rawTxHex })
+                    return result.hash
+                } catch (e) {
+                    throw e
+                }
             }
         },
         {
@@ -57,6 +74,9 @@
                         const balance = result.reduce((t, u) => t + u.value, 0)
                         return util.Sat_to_BTC(balance)
                     })
+            },
+            latestBlock() {
+                return fetch_api(`blocks/tip/height`, { url: this.url })
             },
             // tx({ txid, url }) {
             //     return fetch_api(`tx/${txid}`, { url: url || this.url })
@@ -77,17 +97,11 @@
                     const block = await fetch_api(`block/${blockHash}`, { url: url || this.url })
                     return formatBlock(block)
                 } catch (e) {
-                    console.error(e)
+                    throw e
                 }
             },
-            broadcast({ rawTxHex, url }) {
-                return fetch(`${url || this.url}tx`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ tx: rawTxHex })
-                }).then(response => response.text())
+            async broadcast({ rawTxHex, url }) {
+                return post(`${url || this.url}tx`, { tx: rawTxHex }, { asText: true })
             }
         },
         {
@@ -97,17 +111,20 @@
                 return fetch_api(`address/${addr}`, { url: this.url })
                     .then(result => util.Sat_to_BTC(result.chain_stats.funded_txo_sum - result.chain_stats.spent_txo_sum))
             },
-            tx({ txid }) {
-                return fetch_api(`tx/${txid}`, { url: this.url })
-                    .then(result => formatTx(result))
+            latestBlock() {
+                return fetch_api(`blocks/tip/height`, { url: this.url })
+            },
+            // tx({ txid }) {
+            //     return fetch_api(`tx/${txid}`, { url: this.url })
+            //         .then(result => formatTx(result))
 
-            },
-            txHex({ txid }) {
-                return fetch_api(`tx/${txid}/hex`, { url: this.url, asText: true })
-            },
-            txs({ addr, before, after }) {
-                return fetch_api(`address/${addr}/txs${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: this.url })
-            },
+            // },
+            // txHex({ txid }) {
+            //     return fetch_api(`tx/${txid}/hex`, { url: this.url, asText: true })
+            // },
+            // txs({ addr, before, after }) {
+            //     return fetch_api(`address/${addr}/txs${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: this.url })
+            // },
             async block({ id }) {
                 // if id is hex string then it is block hash
                 try {
@@ -117,17 +134,11 @@
                     const block = await fetch_api(`block/${blockHash}`, { url: this.url })
                     return formatBlock(block)
                 } catch (e) {
-                    console.error(e)
+                    throw e
                 }
             },
-            broadcast({ rawTxHex, url }) {
-                return fetch(`${this.url}tx`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ tx: rawTxHex })
-                }).then(response => response.text())
+            async broadcast({ rawTxHex, url }) {
+                return post(`${url || this.url}tx`, { tx: rawTxHex }, { asText: true })
             }
         },
         {
@@ -152,6 +163,9 @@
                 return fetch_api(`rawaddr/${addr}${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: this.url })
                     .then(result => result.txs)
             },
+            latestBlock() {
+                return fetch_api(`q/getblockcount`, { url: this.url })
+            },
             async block({ id }) {
                 try {
                     let block
@@ -164,7 +178,7 @@
                     }
                     return formatBlock(block)
                 } catch (e) {
-                    console.error(e)
+                    throw e
                 }
             },
             async blockTxs({ id }) {
@@ -179,7 +193,7 @@
                     }
                     return block.tx
                 } catch (e) {
-                    console.error(e)
+
                 }
             }
         }
@@ -202,7 +216,7 @@
                 details.next_block = next_block[0]
             return details
         } catch (e) {
-            console.error(e)
+            throw e
         }
     }
     const formatUtxos = btcOperator.util.format.utxos = async (utxos, allowUnconfirmedUtxos = false) => {
@@ -229,10 +243,14 @@
 
     const formatTx = btcOperator.util.format.tx = async (tx) => {
         try {
-            const { txid, hash, time, block_height, fee, fees, received,
+            let { txid, hash, time, block_height, fee, fees, received,
                 confirmed, size, double_spend, block_hash, confirmations,
                 status: { block_height: statusBlockHeight, block_hash: statusBlockHash, block_time } = {}
             } = tx;
+            if ((block_height || statusBlockHeight) && confirmations === undefined || confirmations === null) {
+                const latestBlock = await multiApi('latestBlock');
+                confirmations = latestBlock - (block_height || statusBlockHeight);
+            }
             const inputs = tx.vin || tx.inputs;
             const outputs = tx.vout || tx.outputs || tx.out;
             return {
@@ -261,7 +279,7 @@
                 })
             }
         } catch (e) {
-            console.error(e)
+            throw e
         }
     }
 
@@ -288,12 +306,12 @@
             }
             throw "No API available"
         } catch (error) {
-            if (error.code && error.code === 1000) {
-                throw error.message;
+            console.error(error)
+            APIs[index].coolDownTime = new Date().getTime() + 1000 * 60 * 10; // 10 minutes
+            return multiApi(fnName, { index: index + 1, ...args });
+            if (error.code && [301, 429, 404].includes(error.code)) {
             } else {
-                console.debug(error);
-                APIs[index].coolDownTime = new Date().getTime() + 1000 * 60 * 10; // 10 minutes
-                return multiApi(fnName, { index: index + 1, ...args });
+                throw error.message || error;
             }
         }
     };
@@ -392,6 +410,13 @@
 
     const broadcastTx = btcOperator.broadcastTx = rawTxHex => new Promise((resolve, reject) => {
         console.log('txHex:', rawTxHex)
+        // return multiApi('broadcast', { rawTxHex })
+        //     .then(result => {
+        //         resolve(result)
+        //     })
+        //     .catch(error => {
+        //         reject(error)
+        //     })
         let url = 'https://coinb.in/api/?uid=1&key=12345678901234567890123456789012&setmodule=bitcoin&request=sendrawtransaction';
         fetch(url, {
             method: 'POST',
@@ -400,7 +425,7 @@
             },
             body: "rawtx=" + rawTxHex
         }).then(response => {
-            // multiApi('broadcast', { rawTxHex }).then(response => {
+            console.log(response)
             response.text().then(resultText => {
                 let r = resultText.match(/<result>.*<\/result>/);
                 if (!r)
@@ -1368,18 +1393,11 @@
         return Crypto.util.bytesToHex(txid);
     }
 
-    const getLatestBlock = btcOperator.getLatestBlock = () => new Promise((resolve, reject) => {
-        fetch_api(`q/getblockcount`)
-            .then(result => resolve(result))
-            .catch(error => reject(error))
-    })
-
     const getTx = btcOperator.getTx = txid => new Promise(async (resolve, reject) => {
         try {
             const result = await multiApi('tx', { txid });
-            if (!result.hasOwnProperty('confirmations'))
-                result.confirmations = await getLatestBlock() - result.block_height;
             resolve({
+                confirmations: result.confirmations,
                 block: result.block_height,
                 txid: result.hash,
                 time: result.time,
