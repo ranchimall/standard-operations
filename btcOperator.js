@@ -1,4 +1,4 @@
-(function (EXPORTS) { //btcOperator v1.2.7
+(function (EXPORTS) { //btcOperator v1.2.8
     /* BTC Crypto and API Operator */
     const btcOperator = EXPORTS;
     const SATOSHI_IN_BTC = 1e8;
@@ -22,6 +22,7 @@
         try {
             const response = await fetch(url, {
                 method: 'POST',
+                mode: 'no-cors',
                 headers: {
                     'Content-Type': 'application/json'
                 },
@@ -56,7 +57,7 @@
             },
             async broadcast({ rawTxHex, url }) {
                 try {
-                    const result = await post(`${url || this.url}txs/push`, { tx: rawTxHex })
+                    const result = await post(`${url || this.url}pushtx`, { tx: rawTxHex })
                     return result.hash
                 } catch (e) {
                     throw e
@@ -78,16 +79,19 @@
             latestBlock() {
                 return fetch_api(`blocks/tip/height`, { url: this.url })
             },
-            // tx({ txid, url }) {
-            //     return fetch_api(`tx/${txid}`, { url: url || this.url })
-            //         .then(result => formatTx(result))
-            // },
-            // txHex({ txid, url }) {
-            //     return fetch_api(`tx/${txid}/hex`, { url: url || this.url, asText: true })
-            // },
-            // txs({ addr, before, after, url }) {
-            //     return fetch_api(`address/${addr}/txs${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: url || this.url })
-            // },
+            tx({ txid, url }) {
+                return fetch_api(`tx/${txid}`, { url: url || this.url })
+                    .then(result => formatTx(result))
+            },
+            txHex({ txid, url }) {
+                return fetch_api(`tx/${txid}/hex`, { url: url || this.url, asText: true })
+            },
+            txs({ addr, url, ...args }) {
+                let queryParams = Object.entries(args).map(([key, value]) => `${key}=${value}`).join('&')
+                if (queryParams)
+                    queryParams = '?' + queryParams
+                return fetch_api(`address/${addr}/txs${queryParams}`, { url: url || this.url })
+            },
             async block({ id, url }) {
                 // if id is hex string then it is block hash
                 try {
@@ -114,17 +118,20 @@
             latestBlock() {
                 return fetch_api(`blocks/tip/height`, { url: this.url })
             },
-            // tx({ txid }) {
-            //     return fetch_api(`tx/${txid}`, { url: this.url })
-            //         .then(result => formatTx(result))
+            tx({ txid }) {
+                return fetch_api(`tx/${txid}`, { url: this.url })
+                    .then(result => formatTx(result))
 
-            // },
-            // txHex({ txid }) {
-            //     return fetch_api(`tx/${txid}/hex`, { url: this.url, asText: true })
-            // },
-            // txs({ addr, before, after }) {
-            //     return fetch_api(`address/${addr}/txs${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: this.url })
-            // },
+            },
+            txHex({ txid }) {
+                return fetch_api(`tx/${txid}/hex`, { url: this.url, asText: true })
+            },
+            txs({ addr, ...args }) {
+                let queryParams = Object.entries(args).map(([key, value]) => `${key}=${value}`).join('&')
+                if (queryParams)
+                    queryParams = '?' + queryParams
+                return fetch_api(`address/${addr}/txs${queryParams}`, { url: this.url })
+            },
             async block({ id }) {
                 // if id is hex string then it is block hash
                 try {
@@ -159,8 +166,11 @@
             txHex({ txid }) {
                 return fetch_api(`rawtx/${txid}?format=hex`, { url: this.url, asText: true })
             },
-            txs({ addr, before, after }) {
-                return fetch_api(`rawaddr/${addr}${before ? `?before=${before}` : ''}${after ? `?after=${after}` : ''}`, { url: this.url })
+            txs({ addr, ...args }) {
+                let queryParams = Object.entries(args).map(([key, value]) => `${key}=${value}`).join('&')
+                if (queryParams)
+                    queryParams = '?' + queryParams
+                return fetch_api(`rawaddr/${addr}${queryParams}`, { url: this.url })
                     .then(result => result.txs)
             },
             latestBlock() {
@@ -195,6 +205,43 @@
                 } catch (e) {
 
                 }
+            }
+        },
+        {
+            url: 'https://coinb.in/api/?uid=1&key=12345678901234567890123456789012&setmodule=bitcoin&request=sendrawtransaction',
+            name: 'Coinb.in',
+            broadcast({ rawTxHex }) {
+                return new Promise((resolve, reject) => {
+                    fetch(this.url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: "rawtx=" + rawTxHex
+                    }).then(response => {
+                        console.log(response)
+                        response.text().then(resultText => {
+                            let r = resultText.match(/<result>.*<\/result>/);
+                            if (!r)
+                                reject(resultText);
+                            else {
+                                r = r.pop().replace('<result>', '').replace('</result>', '');
+                                if (r == '1') {
+                                    let txid = resultText.match(/<txid>.*<\/txid>/).pop().replace('<txid>', '').replace('</txid>', '');
+                                    resolve(txid);
+                                } else if (r == '0') {
+                                    let error
+                                    if (resultText.includes('<message>')) {
+                                        error = resultText.match(/<message>.*<\/message>/).pop().replace('<message>', '').replace('</message>', '');
+                                    } else {
+                                        error = resultText.match(/<response>.*<\/response>/).pop().replace('<response>', '').replace('</response>', '');
+                                    }
+                                    reject(decodeURIComponent(error.replace(/\+/g, " ")));
+                                } else reject(resultText);
+                            }
+                        }).catch(error => reject(error))
+                    }).catch(error => reject(error))
+                });
             }
         }
     ]
@@ -309,10 +356,6 @@
             console.error(error)
             APIs[index].coolDownTime = new Date().getTime() + 1000 * 60 * 10; // 10 minutes
             return multiApi(fnName, { index: index + 1, ...args });
-            if (error.code && [301, 429, 404].includes(error.code)) {
-            } else {
-                throw error.message || error;
-            }
         }
     };
 

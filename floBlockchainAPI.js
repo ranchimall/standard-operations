@@ -1,4 +1,4 @@
-(function (EXPORTS) { //floBlockchainAPI v3.0.1b
+(function (EXPORTS) { //floBlockchainAPI v3.1.1
     /* FLO Blockchain Operator to send/receive data from blockchain using API calls via FLO Blockbook*/
     'use strict';
     const floBlockchainAPI = EXPORTS;
@@ -17,6 +17,22 @@
 
     const SATOSHI_IN_BTC = 1e8;
     const isUndefined = val => typeof val === 'undefined';
+    const checkIfTor = floBlockchainAPI.checkIfTor = () => {
+        return fetch('https://check.torproject.org/api/ip', {
+            mode: 'no-cors'
+        })
+            .then(response => response.json())
+            .then(result => result.IsTor)
+            .catch(error => false)
+    }
+    let isTor = false;
+    checkIfTor().then(result => {
+        isTor = result
+        if (isTor) {
+            DEFAULT.apiURL.FLO.push('http://vl7ni6byqx7rbub5hypxtod5dbfeuhoj5r5exuyl44pspqh2gasjj4qd.onion:9166/')
+            DEFAULT.apiURL.FLO_TEST.push('http://omwkzk6bd6zuragdqsrhdyzgxzre7yx4vzrou4vzftintzc2dmagp6qd.onion:15017/')
+        }
+    });
 
     const util = floBlockchainAPI.util = {};
 
