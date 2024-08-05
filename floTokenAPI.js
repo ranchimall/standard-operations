@@ -1,4 +1,4 @@
-(function (EXPORTS) { //floTokenAPI v1.2.0
+(function (EXPORTS) { //floTokenAPI v1.2.1
     /* Token Operator to send/receive tokens via blockchain using API calls*/
     'use strict';
     const tokenAPI = EXPORTS;
@@ -79,10 +79,10 @@
             fetch_api(`api/v2/transactionDetails/${txID}`).then(res => {
                 if (res.result === "error")
                     reject(res.description);
-                else if (!res.parsedFloData)
-                    reject("Data piece (parsedFloData) missing");
-                else if (!res.transactionDetails)
-                    reject("Data piece (transactionDetails) missing");
+                //else if (!res.parsedFloData)
+                //    reject("Data piece (parsedFloData) missing");
+                //else if (!res.transactionDetails)
+                //    reject("Data piece (transactionDetails) missing");
                 else
                     resolve(res);
             }).catch(error => reject(error))
