@@ -67,16 +67,22 @@
     }
 
     const getBalance = tokenAPI.getBalance = function (floID, token = DEFAULT.currency) {
-        return new Promise((resolve, reject) => {
-            fetch_api(`api/v2/floAddressInfo/${floID}`).then(result => {
-                let token_balance = 0
-                if(result.floAddressBalances != null && typeof result.floAddressBalances == "object" && token in result.floAddressBalances){
-                    token_balance = result.floAddressBalances[token]["balance"] || 0
-                }
-                resolve(token_balance)
-            }).catch(error => reject(error))
-        })
-    }
+      return new Promise(async (resolve) => {
+        try {
+          const result = await fetch_api(`api/v2/floAddressInfo/${floID}`);
+          let token_balance = 0;
+          if (result && result.floAddressBalances && typeof result.floAddressBalances === "object" && (token in result.floAddressBalances)) {
+            const t = result.floAddressBalances[token];
+            token_balance = (t && typeof t === 'object') ? (t.balance ?? 0) : (t ?? 0);
+          }
+          resolve(Number(token_balance) || 0);
+        } catch (error) {
+          console.warn('getBalance failed; returning 0', { floID, token, error });
+          resolve(0); // do not reject—keep UI stable
+        }
+      });
+    };
+
 
     tokenAPI.getTx = function (txID) {
         return new Promise((resolve, reject) => {
