@@ -144,7 +144,7 @@
         }
     });
 
-    var subAdmins, trustedIDs, settings;
+    var subAdmins = [], trustedIDs = [], settings = {};
     Object.defineProperties(floGlobals, {
         subAdmins: {
             get: () => subAdmins
@@ -249,106 +249,154 @@
     const startUpFunctions = [];
 
     startUpFunctions.push(function readSupernodeListFromAPI() {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             if (!startUpOptions.cloud)
                 return resolve("No cloud for this app");
+
             const CLOUD_KEY = "floCloudAPI#" + floCloudAPI.SNStorageID;
+
+            // Fallback: init from cached nodes (never reject)
+            const initFromCache = (tag) =>
+                compactIDB.readData("supernodes", CLOUD_KEY, DEFAULT.root)
+                    .then(nodes => {
+                        nodes = nodes || {};
+                        return floCloudAPI.init(nodes)
+                            .then(r => resolve(`${tag} (from cache)\n${r}`))
+                            .catch(() => resolve(`${tag} (cache present, init skipped)`));
+                    })
+                    .catch(() => resolve(`${tag} (no cache)`));
+
             compactIDB.readData("lastTx", CLOUD_KEY, DEFAULT.root).then(lastTx => {
-                var query_options = { sentOnly: true, pattern: floCloudAPI.SNStorageName };
-                if (typeof lastTx == 'number')  //lastTx is tx count (*backward support)
+                const query_options = { sentOnly: true, pattern: floCloudAPI.SNStorageName };
+                if (typeof lastTx === 'number')  // backward support (tx count)
                     query_options.ignoreOld = lastTx;
-                else if (typeof lastTx == 'string') //lastTx is txid of last tx
+                else if (typeof lastTx === 'string') // last txid
                     query_options.after = lastTx;
-                //fetch data from flosight
+
+                // Try online; if it fails, fall back to cache
                 floBlockchainAPI.readData(floCloudAPI.SNStorageID, query_options).then(result => {
                     compactIDB.readData("supernodes", CLOUD_KEY, DEFAULT.root).then(nodes => {
                         nodes = nodes || {};
-                        for (var i = result.data.length - 1; i >= 0; i--) {
-                            var content = JSON.parse(result.data[i])[floCloudAPI.SNStorageName];
-                            for (let sn in content.removeNodes)
-                                delete nodes[sn];
-                            for (let sn in content.newNodes)
-                                nodes[sn] = content.newNodes[sn];
-                            for (let sn in content.updateNodes)
-                                if (sn in nodes) //check if node is listed
-                                    nodes[sn].uri = content.updateNodes[sn];
+                        for (let i = result.data.length - 1; i >= 0; i--) {
+                            const content = JSON.parse(result.data[i])[floCloudAPI.SNStorageName];
+                            if (!content || typeof content !== 'object') continue;
+                            if (content.removeNodes)
+                                for (let sn in content.removeNodes) delete nodes[sn];
+                            if (content.newNodes)
+                                for (let sn in content.newNodes) nodes[sn] = content.newNodes[sn];
+                            if (content.updateNodes)
+                                for (let sn in content.updateNodes)
+                                    if (sn in nodes) nodes[sn].uri = content.updateNodes[sn];
                         }
                         Promise.all([
                             compactIDB.writeData("lastTx", result.lastItem, CLOUD_KEY, DEFAULT.root),
                             compactIDB.writeData("supernodes", nodes, CLOUD_KEY, DEFAULT.root)
-                        ]).then(_ => {
+                        ]).then(() => {
                             floCloudAPI.init(nodes)
-                                .then(result => resolve("Loaded Supernode list\n" + result))
-                                .catch(error => reject(error))
-                        }).catch(error => reject(error))
-                    }).catch(error => reject(error))
-                })
-            }).catch(error => reject(error))
-        })
+                                .then(r => resolve("Loaded Supernode list\n" + r))
+                                .catch(() => resolve("Loaded Supernode list (init deferred)"));
+                        }).catch(() => resolve("Supernode list updated (persist partial)"));
+                    }).catch(() => initFromCache("Supernode list read failed"));
+                }).catch(() => initFromCache("Supernode network fetch failed"));
+            }).catch(() => initFromCache("Supernode lastTx read failed"));
+        });
     });
 
+
     startUpFunctions.push(function readAppConfigFromAPI() {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             if (!startUpOptions.app_config)
                 return resolve("No configs for this app");
-            compactIDB.readData("lastTx", `${DEFAULT.application}|${DEFAULT.adminID}`, DEFAULT.root).then(lastTx => {
-                var query_options = { sentOnly: true, pattern: DEFAULT.application };
-                if (typeof lastTx == 'number')  //lastTx is tx count (*backward support)
-                    query_options.ignoreOld = lastTx;
-                else if (typeof lastTx == 'string') //lastTx is txid of last tx
-                    query_options.after = lastTx;
-                //fetch data from flosight               
+
+            // small helper: load cached directives into memory and resolve
+            const loadFromIDB = (msg) => Promise.all([
+                compactIDB.readAllData("subAdmins"),
+                compactIDB.readAllData("trustedIDs"),
+                compactIDB.readAllData("settings")
+            ]).then(([sub, trust, set]) => {
+                subAdmins  = Object.keys(sub || {});   // arrays of IDs
+                trustedIDs = Object.keys(trust || {});
+                settings   = set || {};
+                resolve(msg);
+            }).catch(() => {
+                // safe defaults if cache missing
+                subAdmins = []; trustedIDs = []; settings = {};
+                resolve(msg + " (no local cache)");
+            });
+
+            // If cloud is disabled, use cached config and move on
+            if (!startUpOptions.cloud)
+                return loadFromIDB("Read app configuration from local cache (offline)");
+
+            const lastKey = `${DEFAULT.application}|${DEFAULT.adminID}`;
+
+            // Try to read lastTx; on failure, just use cache (don’t block startup)
+            compactIDB.readData("lastTx", lastKey, DEFAULT.root).then(lastTx => {
+                const query_options = { sentOnly: true, pattern: DEFAULT.application };
+                if (typeof lastTx === 'number') query_options.ignoreOld = lastTx;
+                else if (typeof lastTx === 'string') query_options.after = lastTx;
+
+                // Fetch deltas from chain; on failure, fall back to cache
                 floBlockchainAPI.readData(DEFAULT.adminID, query_options).then(result => {
-                    for (var i = result.data.length - 1; i >= 0; i--) {
-                        var content = JSON.parse(result.data[i])[DEFAULT.application];
-                        if (!content || typeof content !== "object")
-                            continue;
+                    for (let i = result.data.length - 1; i >= 0; i--) {
+                        const content = JSON.parse(result.data[i])[DEFAULT.application];
+                        if (!content || typeof content !== "object") continue;
+
                         if (Array.isArray(content.removeSubAdmin))
-                            for (var j = 0; j < content.removeSubAdmin.length; j++)
+                            for (let j = 0; j < content.removeSubAdmin.length; j++)
                                 compactIDB.removeData("subAdmins", content.removeSubAdmin[j]);
+
                         if (Array.isArray(content.addSubAdmin))
-                            for (var k = 0; k < content.addSubAdmin.length; k++)
+                            for (let k = 0; k < content.addSubAdmin.length; k++)
                                 compactIDB.writeData("subAdmins", true, content.addSubAdmin[k]);
+
                         if (Array.isArray(content.removeTrustedID))
-                            for (var j = 0; j < content.removeTrustedID.length; j++)
+                            for (let j = 0; j < content.removeTrustedID.length; j++)
                                 compactIDB.removeData("trustedIDs", content.removeTrustedID[j]);
+
                         if (Array.isArray(content.addTrustedID))
-                            for (var k = 0; k < content.addTrustedID.length; k++)
+                            for (let k = 0; k < content.addTrustedID.length; k++)
                                 compactIDB.writeData("trustedIDs", true, content.addTrustedID[k]);
+
                         if (content.settings)
                             for (let l in content.settings)
-                                compactIDB.writeData("settings", content.settings[l], l)
+                                compactIDB.writeData("settings", content.settings[l], l);
                     }
-                    compactIDB.writeData("lastTx", result.lastItem, `${DEFAULT.application}|${DEFAULT.adminID}`, DEFAULT.root);
-                    compactIDB.readAllData("subAdmins").then(result => {
-                        subAdmins = Object.keys(result);
-                        compactIDB.readAllData("trustedIDs").then(result => {
-                            trustedIDs = Object.keys(result);
-                            compactIDB.readAllData("settings").then(result => {
-                                settings = result;
-                                resolve("Read app configuration from blockchain");
-                            })
-                        })
-                    })
-                })
-            }).catch(error => reject(error))
-        })
+
+                    // persist last item marker (best effort)
+                    compactIDB.writeData("lastTx", result.lastItem, lastKey, DEFAULT.root).catch(() => {});
+
+                    // load fresh values from IDB into memory and finish
+                    loadFromIDB("Read app configuration from blockchain");
+                }).catch(() => {
+                    // network failed → boot from cache
+                    loadFromIDB("Read app configuration from local cache (network fail)");
+                });
+            }).catch(() => {
+                // couldn't read lastTx → still boot from cache
+                loadFromIDB("Read app configuration from local cache (no lastTx)");
+            });
+        });
     });
+
 
     startUpFunctions.push(function loadDataFromAppIDB() {
         return new Promise((resolve, reject) => {
-            if (!startUpOptions.cloud)
-                return resolve("No cloud for this app");
-            var loadData = ["appObjects", "generalData", "lastVC"]
-            var promises = []
-            for (var i = 0; i < loadData.length; i++)
-                promises[i] = compactIDB.readAllData(loadData[i])
-            Promise.all(promises).then(results => {
-                for (var i = 0; i < loadData.length; i++)
-                    floGlobals[loadData[i]] = results[i]
-                resolve("Loaded Data from app IDB")
-            }).catch(error => reject(error))
-        })
+            const loadData = ["appObjects", "generalData", "lastVC"];
+
+            // If cloud is disabled AND no IDB stores are expected, skip early
+            if (!startUpOptions.cloud && (!initIndexedDB.appObs || Object.keys(initIndexedDB.appObs).length === 0))
+                return resolve("No cloud and no local data to load");
+
+            // Otherwise, read from IDB
+            Promise.all(loadData.map(item => compactIDB.readAllData(item)))
+                .then(results => {
+                    for (let i = 0; i < loadData.length; i++)
+                        floGlobals[loadData[i]] = results[i];
+                    resolve("Loaded Data from app IDB");
+                })
+                .catch(error => reject(error));
+        });
     });
 
     var keyInput = type => new Promise((resolve, reject) => {
