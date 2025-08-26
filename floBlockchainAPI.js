@@ -15,6 +15,7 @@
         receiverID: floGlobals.adminID
     };
 
+    floBlockchainAPI.apiURL = DEFAULT.apiURL[DEFAULT.blockchain][0];
     const SATOSHI_IN_BTC = 1e8;
     const isUndefined = val => typeof val === 'undefined';
 
