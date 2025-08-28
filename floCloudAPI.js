@@ -390,13 +390,31 @@
 
     const util = floCloudAPI.util = {};
 
+    //Updating encoding/Decoding to modern standards
     const encodeMessage = util.encodeMessage = function (message) {
-        return btoa(unescape(encodeURIComponent(JSON.stringify(message))))
-    }
+        const bytes = new TextEncoder().encode(JSON.stringify(message));
+        let bin = "";
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin);
+    };
 
     const decodeMessage = util.decodeMessage = function (message) {
-        return JSON.parse(decodeURIComponent(escape(atob(message))))
-    }
+        try {
+            // try modern decode first
+            const bin = atob(message);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return JSON.parse(new TextDecoder().decode(bytes));
+        } catch (e1) {
+            try {
+                // fallback to legacy decode
+                return JSON.parse(decodeURIComponent(escape(atob(message))));
+            } catch (e2) {
+                // final fallback: return raw string to avoid hard crash
+                return message;
+            }
+        }
+    };
 
     const filterKey = util.filterKey = function (type, options = {}) {
         return type + (options.comment ? ':' + options.comment : '') +
